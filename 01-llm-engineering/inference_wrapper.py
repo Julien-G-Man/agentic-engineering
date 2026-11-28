@@ -34,7 +34,7 @@ class BaseClient:
     
 class OllamaClient(BaseClient):
     def __init__(self, base_url="http://localhost:11434"):
-        self.http =  httpx.AsyncClient(base_url=base_url, timeout=60)
+        self.http =  httpx.AsyncClient(base_url=base_url, timeout=300)
         
     async def generate(self, req: InferenceRequest):
         payload = {
@@ -42,8 +42,10 @@ class OllamaClient(BaseClient):
             "messages": req.messages,
             "options": {
                 "temperature": req.temperature,
-                "top_p": req.top_p
+                "top_p": req.top_p,
+                "num_predict": req.max_tokens
             },
+            "think": False,
             "stream": False,
         }
         r = await self.http.post("/api/chat", json=payload)
@@ -78,18 +80,34 @@ class OpenAIClient(BaseClient):
         out = [{"role": "assistant", "content": resp.output_text}]
         return InferenceResponse(
             text=resp.output_text,
-            input_tokens=count_tokens(req.messages, model=self._model),
-            output_tokens=count_tokens(out, model=self._model)
+            input_tokens=resp.usage.input_tokens,
+            output_tokens=resp.usage.output_tokens,
         )
        
 class AnthropicClient(BaseClient):
     def __init__(self):
-        self._model = None
+        self._model = "claude-3-5-sonnet-latest"
         self._api_key = os.getenv("ANTHROPIC_API_KEY", "")
-        self._client = AsyncAnthropic(api_key=self._api_key)
-    
-    async def generate(self):
-        return
+        self._client = None
+
+    async def generate(self, req: InferenceRequest):
+        if self._client is None:
+            self._client = AsyncAnthropic(api_key=self._api_key)
+        system = "\n".join(m["content"] for m in req.messages if m["role"] == "system")
+        msgs = [{"role": m["role"], "content": m["content"]} for m in req.messages if m["role"] != "system"]
+        resp = await self._client.messages.create(
+            model=req.model or self._model,
+            system=system or None,
+            messages=msgs,
+            temperature=req.temperature,
+            max_tokens=req.max_tokens,
+        )
+        text_response = "".join(b.text for b in resp.content if getattr(b, "text", None))
+        return InferenceResponse(
+            text=text_response,
+            input_tokens=resp.usage.input_tokens,
+            output_tokens=resp.usage.output_tokens,
+        )
     
     
 def count_tokens(messages: list[dict], model="gpt-4o-mini"):
@@ -120,7 +138,7 @@ async def run(req):
 
 
 messages = [
-    {"role": "assistant", "content": "Call me Jarvis, your faithful AI assistant."},
+    {"role": "assistant", "content": "Call me Jarvis, your helpful AI assistant."},
     {"role": "user", "content": "What is the best way to become a robotics AI Engineer?"}
 ]
 
